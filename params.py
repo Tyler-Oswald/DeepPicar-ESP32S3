@@ -6,7 +6,7 @@
 URL="http://192.168.4.1"
 # URL="http://192.168.2.109"
 # URL="http://192.168.1.194"
-camera="camera-esp32web"
+camera="camera-sd"
 # camera="camera-null"
 
 ##########################################################
@@ -19,8 +19,8 @@ actuator="actuator-esp32web"
 # intputdev selection
 #   "input-kbd", "input-joystick", "input-web"
 ##########################################################
-inputdev="input-kbd"
-
+inputdev="input-joy"
+# inputdev = "input-wind"
 ##########################################################
 # model input config 
 #   160x120x3 or 80x60x3 or 40x30x3

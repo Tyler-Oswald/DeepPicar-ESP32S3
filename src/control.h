@@ -8,6 +8,9 @@ void setup_control();
 void set_steering(int steering_deg);
 void set_throttle(int throttle_pct);
 
+int get_steering_deg();
+int get_throttle_pct();
+
 // // steering
 // void left();
 // void right();

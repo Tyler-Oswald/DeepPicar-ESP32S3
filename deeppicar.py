@@ -32,6 +32,12 @@ enable_ondevice_dnn = False
 frame_id = 0
 period = 0.05 # sec (=50ms)
 
+# host-side recording files
+keyfile = None
+vidfile = None
+
+_shutdown_done = False
+
 ##########################################################
 # local functions
 ##########################################################
@@ -47,12 +53,33 @@ def g_tick():
         count += 1
         yield max(t + count*period - time.time(),0)
 
+def set_record(on):
+    #Command for starting SD card recording
+    global enable_record
+    if on == enable_record:
+        return
+    enable_record = on
+    print("record mode:", enable_record)
+    if hasattr(camera, "record"):
+        camera.record(enable_record)
+
 def turn_off():
+    global _shutdown_done, keyfile, vidfile
+    if _shutdown_done:
+        return
+    _shutdown_done = True
+    try:
+        set_record(False) 
+    except Exception as e:
+        print("record stop failed:", e)
     actuator.stop()
     camera.stop()
-    if frame_id > 0:
+    if keyfile is not None:
         keyfile.close()
+        keyfile = None
+    if vidfile is not None:
         vidfile.release()
+        vidfile = None
 
 # Scale the image to the model input size
 def get_image_resize(img):
@@ -66,7 +93,7 @@ def get_image_crop(img):
     startx = int((orig_w - params.img_width) * 0.5); # crop from both sides
     starty = int((orig_h - params.img_height) * 0.75); # crop from bottom
     return img[starty:starty+params.img_height, startx:startx+params.img_width,:]
- 
+
 def preprocess(img):
     if args.pre == "resize":
         img = get_image_resize(img)
@@ -79,11 +106,11 @@ def preprocess(img):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         img = np.reshape(img, (params.img_height, params.img_width, 1))
     if args.int8 == True:
-        img = img - 128
+        img = img.astype(np.int16) - 128
         img = np.expand_dims(img, axis=0).astype(np.int8)
     else:
         img = img / 255.
-        img = np.expand_dims(img, axis=0).astype(np.float32)        
+        img = np.expand_dims(img, axis=0).astype(np.float32)
     return img
 
 def overlay_image(l_img, s_img, x_offset, y_offset):
@@ -100,40 +127,18 @@ def overlay_image(l_img, s_img, x_offset, y_offset):
                   (1.0 - s_img[:,:,3]/255.0))
     return l_img
 
-# def get_action(angle):
-#     degree = rad2deg(angle)
-#     if degree <= -args.turnthresh:
-#         return "left"
-#     elif degree < args.turnthresh and degree > -args.turnthresh:
-#         return "center"
-#     elif degree >= args.turnthresh:
-#         return "right"
-#     else:
-#         return "unknown"
-
-# def put_action(angle):
-#     degree = rad2deg(angle)
-#     if degree <= -args.turnthresh:
-#         actuator.left()
-#     elif degree < args.turnthresh and degree > -args.turnthresh:
-#         actuator.center()
-#     elif degree >= args.turnthresh:
-#         actuator.right()
-#     else:
-#         actuator.stop()
-
 def print_stats(execution_times):
     # Calculate statistics
     avg = np.mean(execution_times)
-    min = np.min(execution_times)
-    max = np.max(execution_times)
+    min_ = np.min(execution_times)
+    max_ = np.max(execution_times)
     p99 = np.percentile(execution_times, 99)
     p90 = np.percentile(execution_times, 90)
     p50 = np.percentile(execution_times, 50)
 
     print(f"Average Execution Time: {avg:.6f} seconds")
-    print(f"Minimum Execution Time: {min:.6f} seconds")
-    print(f"Maximum Execution Time: {max:.6f} seconds")
+    print(f"Minimum Execution Time: {min_:.6f} seconds")
+    print(f"Maximum Execution Time: {max_:.6f} seconds")
     print(f"99th Percentile Execution Time: {p99:.6f} seconds")
     print(f"90th Percentile Execution Time: {p90:.6f} seconds")
     print(f"50th Percentile Execution Time: {p50:.6f} seconds")
@@ -152,11 +157,9 @@ def measure_execution_time(func, num_trials):
     execution_times = []
     for _ in range(num_trials):
         start_time = time.time()
-        func()  # Call the function to measure its execution time
+        func()
         end_time = time.time()
-        execution_time = end_time - start_time
-        execution_times.append(execution_time)
-    # Calculate statistics
+        execution_times.append(end_time - start_time)
     print_stats(execution_times)
 
 ##########################################################
@@ -221,7 +224,7 @@ elif args.use == "tflite":
         print("failed to load tflite_runtime")
         # Import TFLMicro interpreter
         try:
-            from tflite_micro_runtime.interpreter import Interpreter 
+            from tflite_micro_runtime.interpreter import Interpreter
             interpreter = Interpreter(params.model_file+'.tflite')
         except:
             print("failed to load tflite_micro_runtime")
@@ -243,7 +246,7 @@ elif args.use == "tflite":
 else:
     print("no model is loaded")
 
-# initlaize deeppicar modules
+# initialize deeppicar modules
 print ("Initialize the camera")
 camera.init(res=cfg_cam_res, fps=cfg_cam_fps, threading=use_thread)
 
@@ -263,17 +266,21 @@ throttle_pct = args.throttle
 steering_deg = 0
 prev_throttle_pct = -1
 prev_steering_deg = -1
+prev_print_steer = None
+prev_print_thr = None
 dnn_steering_deg = 0
+dnn_throttle_pct = 0
 stext = ""
 
 temporal_context_buffer = []
-# enter main loop
+
 
 time.sleep(next(g))
 
 old_frame = None
 frame = None
 
+# enter main loop
 while True:
     ts = time.time()
     old_frame = frame
@@ -286,62 +293,93 @@ while True:
     if frame is None:
         print("frame is None")
         break
-  
+
     ts_frame = time.time()
 
-    # if there's key input, receive the input (must be non blocking)
-    ch = inputdev.read_single_event()
-    
     # process input
-    if ch == ord('j'): # left 
-        steering_deg = -30
-    elif ch == ord('k'): # center 
-        steering_deg = 0
-    elif ch == ord('l'): # right
-        steering_deg = 30
-    elif ch == ord('u'):
-        steering_deg += -10
-    elif ch == ord('o'):
-        steering_deg += 10
-    elif ch == ord('a'): # accel
-        throttle_pct = 50
-        start_ts = ts
-    elif ch == ord('z'): # reverse
-        throttle_pct = -50
-    elif ch == ord('i'): # increase speed 
-        throttle_pct += 5
-    elif ch == ord(','): # decrease speed 
-        throttle_pct += -5
-    elif ch == ord('s'): # stop
-        throttle_pct = 0 
-        actuator.manual()
-        print ("stop")
-        print ("duration: %.2f" % (ts - start_ts))
-        enable_record = False # stop recording as well 
-        args.dnn = False # manual mode
-        enable_ondevice_dnn = False
-    elif ch == ord('n'):    
-        enable_ondevice_dnn = not enable_ondevice_dnn
-        if enable_ondevice_dnn:
-            actuator.auto()
-        else:
+    if params.inputdev == "input-kbd" or params.inputdev == "input-win":
+        ch = inputdev.read_single_event()
+        if ch == ord('j'): # left
+            steering_deg = -30
+        elif ch == ord('k'): # center
+            steering_deg = 0
+        elif ch == ord('l'): # right
+            steering_deg = 30
+        elif ch == ord('u'):
+            steering_deg += -10
+        elif ch == ord('o'):
+            steering_deg += 10
+        elif ch == ord('a'): # accel
+            throttle_pct = 50
+            start_ts = ts
+        elif ch == ord('z'): # reverse
+            throttle_pct = -50
+        elif ch == ord('i'): # increase speed
+            throttle_pct += 5
+        elif ch == ord(','): # decrease speed
+            throttle_pct += -5
+        elif ch == ord('s'): # stop
+            throttle_pct = 0
             actuator.manual()
-        print ("Ondevice DNN:", enable_ondevice_dnn)
-    elif ch == ord('m'):
-        n_trials=100
-        print("actuator latency measumenets: {} trials".format(n_trials))
-        measure_execution_time(actuator.left, n_trials)
-    elif ch == ord('r'):
-        enable_record = not enable_record
-        print ("record mode: ", enable_record)
-    elif ch == ord('t'):
-        view_video = not view_video
-        print ("video mode: ", view_video)
-    elif ch == ord('d'):
-        args.dnn = not args.dnn
-        print ("dnn mode:", args.dnn)
-    elif ch == ord('q'):
-        break
+            print ("stop")
+            print ("duration: %.2f" % (ts - start_ts))
+            set_record(False) # stop recording as well
+            args.dnn = False # manual mode
+            enable_ondevice_dnn = False
+        elif ch == ord('n'):
+            enable_ondevice_dnn = not enable_ondevice_dnn
+            if enable_ondevice_dnn:
+                actuator.auto()
+            else:
+                actuator.manual()
+            print ("Ondevice DNN:", enable_ondevice_dnn)
+        elif ch == ord('m'):
+            n_trials=100
+            print("actuator latency measumenets: {} trials".format(n_trials))
+            measure_execution_time(actuator.left, n_trials)
+        elif ch == ord('r'):
+            set_record(not enable_record)
+        elif ch == ord('t'):
+            view_video = not view_video
+            print ("video mode: ", view_video)
+        elif ch == ord('d'):
+            args.dnn = not args.dnn
+            print ("dnn mode:", args.dnn)
+        elif ch == ord('q'):
+            break
+
+    elif params.inputdev == "input-joy" or params.inputdev == "input_wheel" :
+        quit_requested = False
+        ch = inputdev.read_events()
+        for ev_type, number, value in ch:
+            if ev_type == 2 and number == 1:      # left stick Y = throttle (up = positive)
+                throttle_pct = int(-value / 32767 * 100)
+            elif ev_type == 2 and number == 2:    # right stick X = steering (right = positive, matches keyboard 'l')
+                steering_deg = int(round(-value / 32767 * 30))  
+
+            elif ev_type == 1 and value == 1:     # button press
+                if number == 0:   # stop
+                    throttle_pct = 0
+                    actuator.manual()
+                    print ("stop")
+                    print ("duration: %.2f" % (ts - start_ts))
+                    set_record(False)
+                    args.dnn = False
+                    enable_ondevice_dnn = False
+                elif number == 4: # toggle onboard DNN
+                    enable_ondevice_dnn = not enable_ondevice_dnn
+                    if enable_ondevice_dnn:
+                        actuator.auto()
+                    else:
+                        actuator.manual()
+                    print ("Ondevice DNN:", enable_ondevice_dnn)
+                elif number == 3: # toggle record
+                    set_record(not enable_record)
+                elif number == 1: # quit
+                    quit_requested = True
+
+        if quit_requested:
+            break
 
     ts_input = time.time()
     # print ("input processing time: %.3f" % (ts_input - ts_frame))
@@ -351,23 +389,21 @@ while True:
         # AI enabled mode
         # 1. machine input
         img = preprocess(frame)
-        
+
         # add temporal context to the input image
         temporal_context_buffer.append(img)
         if len(temporal_context_buffer) < params.temporal_context:
             for i in range(params.temporal_context - len(temporal_context_buffer)):
                 temporal_context_buffer.append(img)
         elif len(temporal_context_buffer) > params.temporal_context:
-            temporal_context_buffer.pop(0)   
+            temporal_context_buffer.pop(0)
 
-        img = np.concatenate(temporal_context_buffer, axis=3) # (batch, height, weight, channel). 
-        # print (img.shape)
-        # 2. machine output
+        img = np.concatenate(temporal_context_buffer, axis=3) # (batch, height, width, channel)
         if args.use == "tf":
             dnn_angle = model.predict(img)[0]
         elif args.use == "openvino":
             dnn_angle = model(img)[0][0][0]
-            print ('angle:', dnn_angle);
+            print ('angle:', dnn_angle)
         else: # tflite
             interpreter.set_tensor(input_index, img)
             interpreter.invoke()
@@ -389,27 +425,32 @@ while True:
     ts_dnn = time.time()
     # print ("DNN processing time: %.3f" % (ts_dnn - ts_input))
 
-    # update previous steering angle and throttle
+    # print status when the commanded values change
     stext = "EXP: %2d - AI: %2d, Thr=%2d" % (steering_deg, dnn_steering_deg, throttle_pct)
-    if prev_steering_deg != steering_deg or prev_throttle_pct != throttle_pct:
+    if prev_print_steer != steering_deg or prev_print_thr != throttle_pct:
         print (stext)
+    prev_print_steer = steering_deg
+    prev_print_thr = throttle_pct
 
+    # keep the overlay on a copy so it is never recorded into the training video
+    display_frame = frame
     if view_video == True:
         if args.dnn == True:
             if abs(steering_deg - dnn_steering_deg) < 5:
-                textColor = (0, 255, 0)
+                textColor = (0, 255, 0, 255)
             else:
-                textColor = (255,0,0)
-            bgColor = (0,0,0)
+                textColor = (255, 0, 0, 255)
+            bgColor = (0, 0, 0, 255)
             newImage = Image.new('RGBA', (140, 20), bgColor)
             drawer = ImageDraw.Draw(newImage)
             drawer.text((0, 0), stext, fill=textColor)
-            newImage = cv2.cvtColor(np.array(newImage), cv2.COLOR_BGR2RGBA)
-            frame = overlay_image(frame, newImage, x_offset = 0, y_offset = 0)
-        cv2.imshow('frame', frame)
+            newImage = np.array(newImage)  # already RGBA, no conversion needed
+            display_frame = overlay_image(frame, newImage, x_offset = 0, y_offset = 0)
+        cv2.imshow('frame', display_frame)
         cv2.waitKey(1) & 0xFF
 
-    if enable_record == True:
+    if enable_record == True and params.camera == "camera-esp32web":
+        # host-side recording from the video stream
         assert(not frame is None)
         if frame_id == 0:
             # create files for data recording
@@ -427,21 +468,24 @@ while True:
         # increase frame_id
         frame_id += 1
 
-        # write input (angle)
-        str = "{},{},{},{},{}\n".format(int(ts*1000), frame_id, deg2rad(steering_deg), deg2rad(dnn_steering_deg), throttle_pct)
-        keyfile.write(str)
-
-        # write video stream
+        row = "{},{},{},{},{}\n".format(int(ts*1000), frame_id, deg2rad(steering_deg), deg2rad(dnn_steering_deg), throttle_pct)
+        keyfile.write(row)
         vidfile.write(frame)
         #img_name = "cal_images/opencv_frame_{}.png".format(frame_id)
         #cv2.imwrite(img_name, frame)
         if frame_id >= 1000:
             print ("recorded 1000 frames")
             break
-        if frame_id % 10 == 0: 
+        if frame_id % 10 == 0:
             print ("%.3f %d %.3f %d(ms)" %(ts, frame_id, steering_deg, int((time.time() - ts)*1000)))
 
-    #  args.prob_dnn*100 percent of time choose dnn_angle, while chooing angle for the rest of the time
+    elif enable_record and params.camera == "camera-sd":
+        # recording happens on the car's SD card; nothing to write here
+        if frame_id == 0:
+            print("SD recording mode ready")
+        frame_id += 1
+
+    # args.prob_dnn*100 percent of the time choose dnn_angle
     if args.dnn == True and np.random.rand() < args.prob_dnn:
         deg = dnn_steering_deg
         pct = dnn_throttle_pct
@@ -461,7 +505,7 @@ while True:
 
     dur = ts_actuator - ts
     if dur > period:
-        print("%.3f: took %d ms - deadline miss. frametime: %d ms, actuatortime: %d" % 
+        print("%.3f: took %d ms - deadline miss. frametime: %d ms, actuatortime: %d" %
               (ts - start_ts, int(dur * 1000), int((ts_frame - ts)*1000), int((ts_actuator - ts_dnn)*1000)))
     # else:
     #     print("%.3f: took %d ms" % (ts - start_ts, int(dur * 1000)))
@@ -471,14 +515,15 @@ while True:
     time.sleep(next(g))
 
     # actuate the car when the next period starts if LET is enabled
-    if args.use_LET == True: 
+    if args.use_LET == True:
         if prev_steering_deg != deg:
             actuator.set_steering(deg)
         if prev_throttle_pct != pct:
             actuator.set_throttle(pct)
 
-    prev_steering_deg = steering_deg
-    prev_throttle_pct = throttle_pct
+    # remember what was actually sent so a return to 0 is not skipped
+    prev_steering_deg = deg
+    prev_throttle_pct = pct
     # end of the main loop
 
 print ("Finish..")

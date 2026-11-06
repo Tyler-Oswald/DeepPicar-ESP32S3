@@ -12,8 +12,13 @@
 #include "control.h" // motor control
 #include "camera_lock.h"
 
+#include "sd_record.h"
+
 SemaphoreHandle_t camera_mux = NULL;
 // prepare input image tensor
+
+#define REC_FPS 10
+int g_dnn_deg = 0;
 
 #define USE_INT8 1
 
@@ -124,6 +129,8 @@ void setup() {
     Serial.printf("Camera init failed with error 0x%x", err);
     return;
   } 
+  sensor_t *s = esp_camera_sensor_get();
+  s->set_vflip(s, 1);
 
   Serial.println("Camera init success!");
   Serial.printf("Camera info: framesize=%d, pixel_format=%d\n", config.frame_size, config.pixel_format);
@@ -139,7 +146,7 @@ void setup() {
 
   // setup motor control
   setup_control();
-
+  sd_init();
   // register pilotnet algo
   g_nn = new NeuralNetwork();
 
@@ -151,6 +158,10 @@ void setup() {
 void loop() {
   BaseType_t xWasDelayd;
   TickType_t xLastWakeTime = xTaskGetTickCount();
+  size_t rec_len = 0;
+
+  // start/stop recording requests 
+  record_service();
 
   if (g_use_dnn) {
     // run dnn control loop
@@ -160,11 +171,28 @@ void loop() {
     // dnn control loop
     dnn_loop(fb);
 
+    // record frame to SD
+    if (g_record) record_write(record_encode(fb, &rec_len), rec_len);
+
     xWasDelayd = xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1000 / 20)); // 20fps
 
     // return camera frame buffer
     esp_camera_fb_return(fb);
     if (camera_mux)  xSemaphoreGive(camera_mux);
+  } 
+  else if (g_record_req) {
+    camera_fb_t *fb = NULL;
+    if (camera_mux) xSemaphoreTake(camera_mux, portMAX_DELAY);
+    fb = esp_camera_fb_get();
+
+    // record frame to SD 
+    if (g_record) record_write(record_encode(fb, &rec_len), rec_len);
+
+    // return camera frame buffer
+    esp_camera_fb_return(fb);
+    if (camera_mux)  xSemaphoreGive(camera_mux);
+
+    xWasDelayd = xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1000 / REC_FPS));
   } else {
     // manual control
     delay(1000);
@@ -302,6 +330,7 @@ int GetAction(float rad)
 
 void dnn_loop(camera_fb_t *fb)
 {
+  Serial.println("Entered dnn_loop");
   int64_t fr_begin, fr_cap, fr_pre, fr_dnn;
   static int64_t last_frame = 0;
 
@@ -347,7 +376,8 @@ void dnn_loop(camera_fb_t *fb)
 #endif
   fr_dnn = esp_timer_get_time();
 
-  int deg = (int)rad2deg(angle);
+  int deg = (int)lroundf(angle * 30.0f);
+  g_dnn_deg = deg;
 
   // set steering  
   set_steering(deg);

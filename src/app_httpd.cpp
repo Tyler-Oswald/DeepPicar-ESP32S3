@@ -20,6 +20,8 @@
 #include "esp32-hal-ledc.h"
 #include "sdkconfig.h"
 
+#include "sd_record.h"
+
 #define COLOR_GREEN 0x0000FF00
 #define COLOR_RED 0x00FF0000
 #define COLOR_BLUE 0x000000FF
@@ -73,6 +75,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
 
     while (true)
     {
+        res = ESP_OK;  
         TickType_t xLastWakeTime = xTaskGetTickCount();
         fr_pre = esp_timer_get_time();
 
@@ -163,8 +166,8 @@ static esp_err_t cmd_handler(httpd_req_t *req)
 {
     char *buf = NULL;
     size_t buf_len = 0;
-    char variable[32];
-    char value[32];
+    char variable[32] = "";
+    char value[32] = "0";
 
     buf_len = httpd_req_get_url_query_len(req) + 1;
     if (buf_len > 1) {
@@ -198,6 +201,8 @@ static esp_err_t cmd_handler(httpd_req_t *req)
     } else if (!strcmp(variable, "framesize")) {
         log_i("Set framesize to %d is not supported yet", val);
         res = -1;
+    } else if (!strcmp(variable, "record")) {
+        g_record_req = val ? 1 : 0;
     } else {
         log_i("Unknown command: %s", variable);
         res = -1;
@@ -215,6 +220,10 @@ void startCameraServer()
 {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
+  config.lru_purge_enable = true;
+  config.recv_wait_timeout = 3;
+  config.send_wait_timeout = 3;
+  config.stack_size = 6144;
 
   httpd_uri_t cmd_uri = {
     .uri = "/control",
