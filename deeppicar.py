@@ -474,7 +474,7 @@ while True:
         # increase frame_id
         frame_id += 1
 
-        row = "{},{},{},{},{}\n".format(int(ts*1000), frame_id, deg2rad(steering_deg), deg2rad(dnn_steering_deg), throttle_pct)
+        row = "{},{},{},{},{}\n".format(int(ts*1000), frame_id, steering_deg, dnn_steering_deg, throttle_pct)
         keyfile.write(row)
         vidfile.write(frame)
         #img_name = "cal_images/opencv_frame_{}.png".format(frame_id)
