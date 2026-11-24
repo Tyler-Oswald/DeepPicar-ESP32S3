@@ -130,7 +130,7 @@ void setup() {
     return;
   } 
   sensor_t *s = esp_camera_sensor_get();
-  s->set_vflip(s, 1);
+  s->set_vflip(s, 0);
 
   Serial.println("Camera init success!");
   Serial.printf("Camera info: framesize=%d, pixel_format=%d\n", config.frame_size, config.pixel_format);

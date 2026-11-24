@@ -6,7 +6,7 @@
 URL="http://192.168.4.1"
 # URL="http://192.168.2.109"
 # URL="http://192.168.1.194"
-camera="camera-sd"
+camera="camera-esp32web"
 # camera="camera-null"
 
 ##########################################################

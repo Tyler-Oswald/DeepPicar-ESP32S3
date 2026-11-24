@@ -9,6 +9,7 @@ import sys
 import params
 import argparse
 import warnings
+import urllib.request
 warnings.filterwarnings('ignore', message='.*tf.lite.Interpreter is deprecated.*')
 
 from PIL import Image, ImageDraw
@@ -17,6 +18,7 @@ from PIL import Image, ImageDraw
 # import deeppicar's sensor/actuator modules
 ##########################################################
 camera   = __import__(params.camera)
+sdcam    = __import__("camera-sd")
 actuator = __import__(params.actuator)
 inputdev = __import__(params.inputdev)
 
@@ -60,8 +62,9 @@ def set_record(on):
         return
     enable_record = on
     print("record mode:", enable_record)
-    if hasattr(camera, "record"):
-        camera.record(enable_record)
+    #if hasattr(camera, "record"):
+    #camera.record(enable_record)
+    sdcam.record(enable_record)
 
 def turn_off():
     global _shutdown_done, keyfile, vidfile
@@ -291,8 +294,11 @@ while True:
         frame = camera.read_frame()
 
     if frame is None:
-        print("frame is None")
-        break
+        print("frame is None, skipping")
+        frame = old_frame
+        if frame is None:
+            time.sleep(next(g))
+            continue
 
     ts_frame = time.time()
 
@@ -473,9 +479,6 @@ while True:
         vidfile.write(frame)
         #img_name = "cal_images/opencv_frame_{}.png".format(frame_id)
         #cv2.imwrite(img_name, frame)
-        if frame_id >= 1000:
-            print ("recorded 1000 frames")
-            break
         if frame_id % 10 == 0:
             print ("%.3f %d %.3f %d(ms)" %(ts, frame_id, steering_deg, int((time.time() - ts)*1000)))
 
